@@ -16,7 +16,7 @@ type session struct {
 }
 
 func NewSession(upstream Middleware, config *SessionConfig) (Middleware, error) {
-	asserted, ok := config.Credential.(credential)
+	asserted, ok := config.Credential.(UserPasswordCredential)
 	if ok {
 		credentialParamValue, err := asserted.prepare(upstream)
 		if err != nil {
