@@ -24,18 +24,19 @@ type Shell struct {
 
 // New creates a new powershell-process
 func New() (*Shell, error) {
+	// specify which binary to use
+	// depending on os
 	var binary string
-	if runtime.GOOS == "windows" {
+	switch os := runtime.GOOS; os {
+	case "darwin", "linux":
+		binary = "pwsh"
+	case "windows":
 		binary = "powershell.exe"
-	} else if runtime.GOOS == "darwin" {
-		binary = "pwsh"
-	} else if runtime.GOOS == "linux" {
-		binary = "pwsh"
-	} else {
+	default:
 		return nil, errors.Errorf("powershell: GOOS %s not supported", runtime.GOOS)
 	}
-	cmd := exec.Command(binary, "-NoExit", "-Command", "-")
 
+	cmd := exec.Command(binary, "-NoExit", "-Command", "-")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, errors.Wrap(err, "powershell: cannot get stdin-pipe")
