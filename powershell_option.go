@@ -26,8 +26,8 @@ func WithAllowRedirection() Option {
 	return withAllowRedirection(true)
 }
 
-func (w withAllowRedirection) Apply(o *internal.Settings) { 
-	o.AllowRedirection = bool(w) 
+func (w withAllowRedirection) Apply(o *internal.Settings) {
+	o.AllowRedirection = bool(w)
 }
 
 type withCertificateThumbprint string
@@ -36,7 +36,7 @@ func WithCertificateThumbprint(thumbprint string) Option {
 	return withCertificateThumbprint(thumbprint)
 }
 
-func (w withCertificateThumbprint) Apply(o *internal.Settings) { 
+func (w withCertificateThumbprint) Apply(o *internal.Settings) {
 	o.CertificateThumbprint = string(w)
 }
 
@@ -46,8 +46,8 @@ func WithSSL() Option {
 	return withSSL(true)
 }
 
-func (w withSSL) Apply(o *internal.Settings) { 
-	o.UseSSL = bool(w) 
+func (w withSSL) Apply(o *internal.Settings) {
+	o.UseSSL = bool(w)
 }
 
 type withAuthentication string
@@ -56,7 +56,7 @@ func WithAuthentication(auth string) Option {
 	return withAuthentication(auth)
 }
 
-func (w withAuthentication) Apply(o *internal.Settings) { 
+func (w withAuthentication) Apply(o *internal.Settings) {
 	o.Authentication = string(w)
 }
 
@@ -66,6 +66,6 @@ func WithPort(port int) Option {
 	return withPort(port)
 }
 
-func (w withPort) Apply(o *internal.Settings) { 
+func (w withPort) Apply(o *internal.Settings) {
 	o.Port = int(w)
 }

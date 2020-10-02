@@ -10,7 +10,7 @@ type Settings struct {
 	ComputerName          string
 	Username              string
 	Password              string
-	Credential 			string
+	Credential            string
 	AllowRedirection      bool
 	Authentication        string
 	CertificateThumbprint string
@@ -20,12 +20,12 @@ type Settings struct {
 
 func (s *Settings) Validate() error {
 	var auth = map[string]bool{
-		"default": true,
-		"basic":   true,
-		"credssp": true,
-		"digest": true,
-		"kerberos": true,
-		"negotiate": true,
+		"default":                         true,
+		"basic":                           true,
+		"credssp":                         true,
+		"digest":                          true,
+		"kerberos":                        true,
+		"negotiate":                       true,
 		"negotiatewithimplicitcredential": true,
 	}
 	if !auth[strings.ToLower(s.Authentication)] {

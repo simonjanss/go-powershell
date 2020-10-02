@@ -16,8 +16,8 @@ import (
 )
 
 type Shell struct {
-	cmd *exec.Cmd
-	stdin io.WriteCloser
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	stderr io.ReadCloser
 }
@@ -88,15 +88,15 @@ type Cmd struct {
 	// the user creating the command
 	command string
 
-	// outBoundary is a token used to know 
+	// outBoundary is a token used to know
 	// when to stop reading  from the stdout-pipe
 	outBoundary string
 
-	// errBoundary is a token used to know 
+	// errBoundary is a token used to know
 	// when to stop reading  from the stderr-pipe
 	errBoundary string
 
-	// stdin is used to write the commands 
+	// stdin is used to write the commands
 	// to the underlying powershell-process
 	stdin io.WriteCloser
 
@@ -117,12 +117,12 @@ func (s *Shell) Command(cmd string) *Cmd {
 // command creates a command
 func (s *Shell) command(cmd string) *Cmd {
 	return &Cmd{
-		command: cmd,
-		outBoundary: createBoundary(), 
+		command:     cmd,
+		outBoundary: createBoundary(),
 		errBoundary: createBoundary(),
-		stdin: s.stdin,
-		stdout: s.stdout,
-		stderr: s.stderr,
+		stdin:       s.stdin,
+		stdout:      s.stdout,
+		stderr:      s.stderr,
 	}
 }
 
@@ -136,9 +136,9 @@ func (c *Cmd) Output() ([]byte, error) {
 
 func (s *Shell) CreateCredential(user, secret string) (string, error) {
 	credential := "goCred" + createRandomString(8)
-	cmd := fmt.Sprintf("$%s = New-Object -TypeName 'System.Management.Automation.PSCredential' -ArgumentList %s, $%s", 
-		credential, 
-		user, 
+	cmd := fmt.Sprintf("$%s = New-Object -TypeName 'System.Management.Automation.PSCredential' -ArgumentList %s, $%s",
+		credential,
+		user,
 		secret,
 	)
 	err := s.command(cmd).Start()
@@ -201,7 +201,7 @@ func (c *Cmd) withOutput() ([]byte, error) {
 
 type Session struct {
 	sessionID string
-	shell *Shell
+	shell     *Shell
 }
 
 func (s *Shell) NewSession(host string, opts ...Option) (*Session, error) {
@@ -210,11 +210,11 @@ func (s *Shell) NewSession(host string, opts ...Option) (*Session, error) {
 	for _, o := range opts {
 		o.Apply(&settings)
 	}
-	
+
 	if err := settings.Validate(); err != nil {
 		return nil, err
 	}
-	
+
 	return s.newSession(settings)
 }
 
@@ -231,7 +231,7 @@ func (s *Shell) newSession(settings internal.Settings) (*Session, error) {
 		}
 		args = append(args, fmt.Sprintf("-Credential $%s", cred))
 	}
-	
+
 	sessionID := "goSess" + createRandomString(8)
 	cmd := s.command(fmt.Sprintf("$%s = New-PSSession %s", sessionID, strings.Join(args, " ")))
 	if err := cmd.Run(); err != nil {
