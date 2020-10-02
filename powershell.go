@@ -15,6 +15,8 @@ import (
 	"github.com/simonjanss/go-powershell/internal"
 )
 
+// Shell holds the underlying powershell-process
+// and pipes for stdin, stdout and stderr
 type Shell struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -56,7 +58,12 @@ func New() (*Shell, error) {
 		return nil, errors.Wrap(err, "powershell: cannot start cmd")
 	}
 
-	return &Shell{cmd, stdin, stdout, stderr}, nil
+	return &Shell{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
+	}, nil
 }
 
 // Close closes the underlying powershell-process
@@ -126,14 +133,12 @@ func (s *Shell) command(cmd string) *Cmd {
 	}
 }
 
+// Execute a specified command in the shell
 func (s *Shell) Execute(cmd string) ([]byte, error) {
 	return s.command(cmd).withOutput()
 }
 
-func (c *Cmd) Output() ([]byte, error) {
-	return c.withOutput()
-}
-
+// CreateCredential creates a automation credential with username and secret-var
 func (s *Shell) CreateCredential(user, secret string) (string, error) {
 	credential := "goCred" + createRandomString(8)
 	cmd := fmt.Sprintf("$%s = New-Object -TypeName 'System.Management.Automation.PSCredential' -ArgumentList %s, $%s",
@@ -145,12 +150,20 @@ func (s *Shell) CreateCredential(user, secret string) (string, error) {
 	return credential, errors.Wrap(err, "powershell: ")
 }
 
+// ConvertToSecureString converts a secret to a secure-string
+// will return the powershell variable for the secure-string or error
 func (s *Shell) ConvertToSecureString(secret string) (string, error) {
 	secure := "goPass" + createRandomString(8)
 	err := s.command(fmt.Sprintf("$%s = ConvertTo-SecureString -String '%s' -AsPlainText -Force", secure, secret)).Start()
 	return secure, errors.Wrap(err, "powershell: ")
 }
 
+// Output executes a command with output
+func (c *Cmd) Output() ([]byte, error) {
+	return c.withOutput()
+}
+
+// Run executes a command and wait for it to finish
 func (c *Cmd) Run() error {
 	if err := c.Start(); err != nil {
 		return err
@@ -158,6 +171,7 @@ func (c *Cmd) Run() error {
 	return c.Wait()
 }
 
+// Start the command
 func (c *Cmd) Start() error {
 	// wrap the command in special markers so we know when to stop reading from the pipes
 	command := fmt.Sprintf("%s; echo '%s'; [Console]::Error.WriteLine('%s')\r\n", c.command, c.outBoundary, c.errBoundary)
@@ -167,6 +181,7 @@ func (c *Cmd) Start() error {
 	return nil
 }
 
+// Wait for command to finish
 func (c *Cmd) Wait() error {
 	// read stderr
 	stderr := ""
@@ -182,6 +197,7 @@ func (c *Cmd) Wait() error {
 	return nil
 }
 
+// withOutput reads and returns the stdout and stderr
 func (c *Cmd) withOutput() ([]byte, error) {
 	// read stdout and stderr
 	stdout := ""
@@ -199,11 +215,13 @@ func (c *Cmd) withOutput() ([]byte, error) {
 	return []byte(stdout), nil
 }
 
+// Session is a remote-session
 type Session struct {
 	sessionID string
 	shell     *Shell
 }
 
+// NewSession creates a new session
 func (s *Shell) NewSession(host string, opts ...Option) (*Session, error) {
 	var settings internal.Settings
 	settings.ComputerName = host
@@ -218,6 +236,7 @@ func (s *Shell) NewSession(host string, opts ...Option) (*Session, error) {
 	return s.newSession(settings)
 }
 
+// newSession creates a new session
 func (s *Shell) newSession(settings internal.Settings) (*Session, error) {
 	args := settings.ToArgs()
 	if settings.Username != "" && settings.Password != "" {
@@ -279,6 +298,5 @@ func streamReader(stream io.Reader, boundary string, buffer *string, signal *syn
 
 	*buffer = strings.TrimSuffix(output, marker)
 	signal.Done()
-
 	return nil
 }
