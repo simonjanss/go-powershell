@@ -18,10 +18,24 @@ import (
 // Shell holds the underlying powershell-process
 // and pipes for stdin, stdout and stderr
 type Shell struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
+	// cmd is the underlying powershell-process
+	cmd *exec.Cmd
+
+	// stdin is used to write the commands
+	// to the underlying powershell-process
+	stdin io.WriteCloser
+
+	// stdout is the pipe for the underlying -
+	// powershell-process standard output
 	stdout io.ReadCloser
+
+	// stderr is the pipe for the underlying -
+	// powershell-process standard error
 	stderr io.ReadCloser
+
+	// busy is set to true if
+	// the shell is running a command
+	busy bool
 }
 
 // New creates a new powershell-process
@@ -72,6 +86,7 @@ func (s *Shell) Close() error {
 		return errors.New("powershell: cannot close nil-pointer")
 	}
 
+	// kill the underlying powershell-process
 	if s.cmd.Process != nil {
 		if err := s.cmd.Process.Kill(); err != nil {
 			return errors.Wrap(err, "powershell: cannot kill underlying process")
@@ -88,12 +103,44 @@ func (s *Shell) Close() error {
 // GetPid returns the process id for the powershell-process
 func (s *Shell) GetPid() int { return s.cmd.Process.Pid }
 
+// Execute a specified command in the shell
+func (s *Shell) Execute(cmd string) ([]byte, error) {
+	return s.command(cmd).execute()
+}
+
+// createCredential creates a automation credential with username and secret-var
+func (s *Shell) createCredential(user, password string) (*Credential, error) {
+	// Create a secure string from the password
+	secret := "goPass" + createRandomString(8)
+	cmd := s.command(fmt.Sprintf("$%s = ConvertTo-SecureString -String '%s' -AsPlainText -Force", secret, password))
+	if _, err := cmd.execute(); err != nil {
+		return nil, errors.Wrap(err, "powershell: failed to create secure string for credential")
+	}
+
+	// Create the credential with the secure string
+	id := "goCred" + createRandomString(8)
+	credCmd := fmt.Sprintf("$%s = New-Object -TypeName 'System.Management.Automation.PSCredential' -ArgumentList %s, $%s",
+		id,
+		user,
+		secret,
+	)
+
+	if _, err := s.command(credCmd).execute(); err != nil {
+		return nil, errors.Wrap(err, "powershell: failed to create credential")
+	}
+
+	return &Credential{id, user}, nil
+}
+
 // Cmd holds information for creating
 // a command to be run in powershell
 type Cmd struct {
 	// command is the input from
 	// the user creating the command
 	command string
+
+	// Credential to use with the command
+	credential *Credential
 
 	// outBoundary is a token used to know
 	// when to stop reading  from the stdout-pipe
@@ -103,17 +150,8 @@ type Cmd struct {
 	// when to stop reading  from the stderr-pipe
 	errBoundary string
 
-	// stdin is used to write the commands
-	// to the underlying powershell-process
-	stdin io.WriteCloser
-
-	// stdout is the pipe for the underlying -
-	// powershell-process standard output
-	stdout io.ReadCloser
-
-	// stderr is the pipe for the underlying -
-	// powershell-process standard error
-	stderr io.ReadCloser
+	// shell is the underlying powershell-process
+	shell *Shell
 }
 
 // Command creates a command from the user-input
@@ -127,143 +165,170 @@ func (s *Shell) command(cmd string) *Cmd {
 		command:     cmd,
 		outBoundary: createBoundary(),
 		errBoundary: createBoundary(),
-		stdin:       s.stdin,
-		stdout:      s.stdout,
-		stderr:      s.stderr,
+		shell:       s,
 	}
 }
 
-// Execute a specified command in the shell
-func (s *Shell) Execute(cmd string) ([]byte, error) {
-	return s.command(cmd).withOutput()
-}
-
-// CreateCredential creates a automation credential with username and secret-var
-func (s *Shell) CreateCredential(user, secret string) (string, error) {
-	credential := "goCred" + createRandomString(8)
-	cmd := fmt.Sprintf("$%s = New-Object -TypeName 'System.Management.Automation.PSCredential' -ArgumentList %s, $%s",
-		credential,
-		user,
-		secret,
-	)
-	err := s.command(cmd).Start()
-	return credential, errors.Wrap(err, "powershell: ")
-}
-
-// ConvertToSecureString converts a secret to a secure-string
-// will return the powershell variable for the secure-string or error
-func (s *Shell) ConvertToSecureString(secret string) (string, error) {
-	secure := "goPass" + createRandomString(8)
-	err := s.command(fmt.Sprintf("$%s = ConvertTo-SecureString -String '%s' -AsPlainText -Force", secure, secret)).Start()
-	return secure, errors.Wrap(err, "powershell: ")
-}
-
-// Output executes a command with output
-func (c *Cmd) Output() ([]byte, error) {
-	return c.withOutput()
-}
-
-// Run executes a command and wait for it to finish
-func (c *Cmd) Run() error {
-	if err := c.Start(); err != nil {
-		return err
+// execute the command - will return output or error
+func (c *Cmd) execute() ([]byte, error) {
+	// check if the shell is busy
+	if c.shell.busy {
+		return nil, errors.New("powershell: cannot execute command - powershell is busy")
 	}
-	return c.Wait()
-}
+	// set the shell to busy and start the command
+	c.shell.busy = true
 
-// Start the command
-func (c *Cmd) Start() error {
 	// wrap the command in special markers so we know when to stop reading from the pipes
 	command := fmt.Sprintf("%s; echo '%s'; [Console]::Error.WriteLine('%s')\r\n", c.command, c.outBoundary, c.errBoundary)
-	if _, err := c.stdin.Write([]byte(command)); err != nil {
-		return errors.Wrap(errors.Wrap(err, c.command), "powershell: cannot execute command")
+	if _, err := c.shell.stdin.Write([]byte(command)); err != nil {
+		return nil, errors.Wrap(errors.Wrap(err, c.command), "powershell: cannot execute command")
 	}
-	return nil
-}
 
-// Wait for command to finish
-func (c *Cmd) Wait() error {
-	// read stderr
-	stderr := ""
-
-	waiter := &sync.WaitGroup{}
-	waiter.Add(1)
-	go streamReader(c.stderr, c.errBoundary, &stderr, waiter)
-	waiter.Wait()
-
-	if len(stderr) > 0 {
-		return errors.Wrap(errors.Wrap(errors.New(stderr), c.command), "powershell: ")
-	}
-	return nil
-}
-
-// withOutput reads and returns the stdout and stderr
-func (c *Cmd) withOutput() ([]byte, error) {
 	// read stdout and stderr
 	stdout := ""
 	stderr := ""
 
 	waiter := &sync.WaitGroup{}
 	waiter.Add(2)
-	go streamReader(c.stdout, c.outBoundary, &stdout, waiter)
-	go streamReader(c.stderr, c.errBoundary, &stderr, waiter)
+	go streamReader(c.shell.stdout, c.outBoundary, &stdout, waiter)
+	go streamReader(c.shell.stderr, c.errBoundary, &stderr, waiter)
 	waiter.Wait()
 
+	// The command has finished
+	// set busy to false
+	c.shell.busy = false
+
+	// check for errors in stderr
 	if len(stderr) > 0 {
 		return nil, errors.Wrap(errors.Wrap(errors.New(stderr), c.command), "powershell: ")
 	}
+
 	return []byte(stdout), nil
+}
+
+// withSession wraps the command to be run
+// within the specified session
+func (c *Cmd) withSession(id string) {
+	c.command = fmt.Sprintf("Invoke-Command -Session $%s -ScriptBlock {%s}", id, c.command)
+	if c.credential != nil {
+		c.command = fmt.Sprintf("%s -Credential $%s", c.command, c.credential.id)
+	}
 }
 
 // Session is a remote-session
 type Session struct {
-	sessionID string
-	shell     *Shell
+	// id of the session
+	id string
+
+	// shell is the underlying
+	// powershell-process
+	shell *Shell
+
+	// credential to use for
+	// running commands in the session
+	credential *Credential
 }
 
 // NewSession creates a new session
 func (s *Shell) NewSession(host string, opts ...Option) (*Session, error) {
+	// set the computername to the settings
 	var settings internal.Settings
 	settings.ComputerName = host
+
+	// Apply the options to the settings
 	for _, o := range opts {
 		o.Apply(&settings)
 	}
 
+	// Validate the settings
 	if err := settings.Validate(); err != nil {
 		return nil, err
 	}
 
+	// create a new session with the settings
 	return s.newSession(settings)
 }
 
 // newSession creates a new session
 func (s *Shell) newSession(settings internal.Settings) (*Session, error) {
+	// Create arguments from the settings
 	args := settings.ToArgs()
+
+	// Create a credential if username and password is provided
+	var cred *Credential
 	if settings.Username != "" && settings.Password != "" {
-		secret, err := s.ConvertToSecureString(settings.Password)
+		cred, err := s.createCredential(settings.Username, settings.Password)
 		if err != nil {
 			return nil, err
 		}
-		cred, err := s.CreateCredential(settings.Username, secret)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, fmt.Sprintf("-Credential $%s", cred))
+		args = append(args, fmt.Sprintf("-Credential $%s", cred.id))
 	}
 
+	// Create a id for the session
 	sessionID := "goSess" + createRandomString(8)
+
+	// Create the new session with the ID and arguments
 	cmd := s.command(fmt.Sprintf("$%s = New-PSSession %s", sessionID, strings.Join(args, " ")))
-	if err := cmd.Run(); err != nil {
+	if _, err := cmd.execute(); err != nil {
 		return nil, errors.Wrap(err, "powershell: Could not create new PSSession")
 	}
 
-	return &Session{sessionID, s}, nil
+	return &Session{id: sessionID, shell: s, credential: cred}, nil
 }
 
+// SetCredential sets a specific credential which
+// will be used to run commands within the session
+func (s *Session) SetCredential(cred *Credential) {
+	s.credential = cred
+}
+
+// Execute a command in the current session
+func (s *Session) Execute(cmd string) ([]byte, error) {
+	command := s.shell.command(cmd)
+	command.withSession(s.id)
+	return command.execute()
+}
+
+// Close will disconnect from the powershell-session
+func (s *Session) Close() error {
+	if _, err := s.Execute(fmt.Sprintf("Disconnect-PSSession -Session $%s", s.id)); err != nil {
+		return errors.Wrap(err, "powershell: failed to disconnect from ps-session")
+	}
+
+	s.shell = nil
+	s.credential = nil
+	return nil
+}
+
+// GetPid returns the process id of the sessions powershell-process
+func (s *Session) GetPid() int { return s.shell.cmd.Process.Pid }
+
+// Credential holds the id and username
+// for a PSCredential
+type Credential struct {
+	id       string
+	username string
+}
+
+// ID of the credential
+func (c *Credential) ID() string {
+	return c.id
+}
+
+// Username of the credential
+func (c *Credential) Username() string {
+	return c.username
+}
+
+// createBoundary creates a boundary that will
+// be used to determine when to stop running a cmd
 func createBoundary() string {
 	return "$go" + createRandomString(12) + "$"
 }
 
+// createRandomString creates a random string
+// with the specified bytes, is used for creating
+// ids and such
 func createRandomString(bytes int) string {
 	c := bytes
 	b := make([]byte, c)
@@ -276,6 +341,7 @@ func createRandomString(bytes int) string {
 	return hex.EncodeToString(b)
 }
 
+// streamReader reads the stdout and stderr from a command
 func streamReader(stream io.Reader, boundary string, buffer *string, signal *sync.WaitGroup) error {
 	// read all output until we have found our boundary token
 	output := ""
