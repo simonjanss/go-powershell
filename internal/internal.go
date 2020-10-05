@@ -28,7 +28,7 @@ func (s *Settings) Validate() error {
 		"negotiate":                       true,
 		"negotiatewithimplicitcredential": true,
 	}
-	if !auth[strings.ToLower(s.Authentication)] {
+	if !auth[strings.ToLower(s.Authentication)] && s.Authentication != "" {
 		return errors.New("Need to specify a valid authentication-type for powershell")
 	}
 	return nil
