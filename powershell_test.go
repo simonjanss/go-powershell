@@ -22,27 +22,49 @@ func TestExecute(t *testing.T) {
 
 	ps, err := powershell.New()
 	is.NoErr(err)
-	defer ps.Close()
 
-	pwd, err := ps.Execute("dir")
+	var tt = []struct {
+		name       string
+		command    string
+		shouldFail bool
+		hasOutput  bool
+	}{
+		{name: "dir-command", command: "dir", shouldFail: false, hasOutput: true},
+		{name: "cd-command", command: "cd ..", shouldFail: false, hasOutput: false},
+		{name: "random-command", command: "this-should-fail", shouldFail: true, hasOutput: false},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			output, err := ps.Execute(tc.command)
+			if !tc.shouldFail {
+				is.NoErr(err)
+			}
+			if tc.hasOutput {
+				is.True(output != nil)
+			} else {
+				is.True(output == nil)
+			}
+		})
+	}
+
+	err = ps.Close()
 	is.NoErr(err)
-	fmt.Println(string(pwd))
 }
 
-func TestConcurrent(t *testing.T) {
+func TestConcurrentExecute(t *testing.T) {
 	is := is.New(t)
 
 	ps, err := powershell.New()
 	is.NoErr(err)
-	defer ps.Close()
 
 	go func() {
-		dir, err := ps.Execute("dir")
+		_, err := ps.Execute("dir")
 		is.Equal(err.Error(), "powershell: cannot execute command - powershell is busy")
-		fmt.Println(string(dir))
 	}()
 
-	hello, err := ps.Execute("echo hello")
+	output, err := ps.Execute("echo hello")
 	is.NoErr(err)
-	fmt.Println(string(hello))
+	is.True(string(output) == "hello")
 }
