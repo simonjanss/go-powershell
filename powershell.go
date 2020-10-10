@@ -1,6 +1,7 @@
 package powershell
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -180,8 +181,10 @@ func (c *Cmd) execute() ([]byte, error) {
 	}
 
 	// read stdout and stderr
-	stdout := ""
-	stderr := ""
+	var (
+		stdout []byte
+		stderr []byte
+	)
 
 	waiter := &sync.WaitGroup{}
 	waiter.Add(2)
@@ -192,13 +195,12 @@ func (c *Cmd) execute() ([]byte, error) {
 	// The command has finished
 	// set busy to false
 	c.shell.busy = false
-
 	// check for errors in stderr
-	if len(stderr) > 0 {
-		return nil, errors.Wrap(errors.Wrap(errors.New(stderr), c.command), "powershell: ")
+	if stderr != nil {
+		return nil, errors.Wrap(errors.Wrap(errors.New(string(stderr)), c.command), "powershell: ")
 	}
 
-	return []byte(stdout), nil
+	return stdout, nil
 }
 
 // withSession wraps the command to be run
@@ -337,11 +339,9 @@ func createRandomString(bytes int) string {
 }
 
 // streamReader reads the stdout and stderr from a command
-func streamReader(stream io.Reader, boundary string, buffer *string, signal *sync.WaitGroup) error {
+func streamReader(stream io.Reader, boundary string, buffer *[]byte, signal *sync.WaitGroup) error {
 	// read all output until we have found our boundary token
-	output := ""
-	bufsize := 64
-	marker := boundary + "\r\n"
+	var bufsize = 64
 
 	for {
 		buf := make([]byte, bufsize)
@@ -350,14 +350,23 @@ func streamReader(stream io.Reader, boundary string, buffer *string, signal *syn
 			return err
 		}
 
-		output = output + string(buf[:read])
-
-		if strings.HasSuffix(output, marker) {
+		*buffer = append(*buffer, buf[:read]...)
+		if bytes.Contains(*buffer, []byte(boundary+"\n")) {
 			break
 		}
 	}
 
-	*buffer = strings.TrimSuffix(output, marker)
+	// remove the boundary from the buffer
+	splitted := bytes.Split(*buffer, []byte(boundary)) //+"\n"))
+
+	// remove new-line byte and set the result to the buffer
+	*buffer = bytes.TrimSuffix(splitted[0], []byte{10})
+
+	// set the buffer to nil if it is empty
+	if len(*buffer) == 0 {
+		*buffer = nil
+	}
+
 	signal.Done()
 	return nil
 }
