@@ -100,13 +100,13 @@ func (s *Shell) Close() error {
 	return nil
 }
 
-// GetPid returns the process id for the powershell-process
-func (s *Shell) GetPid() int { return s.cmd.Process.Pid }
-
 // Execute a specified command in the shell
 func (s *Shell) Execute(cmd string) ([]byte, error) {
 	return s.command(cmd).execute()
 }
+
+// GetPid returns the process id for the powershell-process
+func (s *Shell) GetPid() int { return s.cmd.Process.Pid }
 
 // createCredential creates a automation credential with username and secret-var
 func (s *Shell) createCredential(user, password string) (*Credential, error) {
@@ -152,11 +152,6 @@ type Cmd struct {
 
 	// shell is the underlying powershell-process
 	shell *Shell
-}
-
-// Command creates a command from the user-input
-func (s *Shell) Command(cmd string) *Cmd {
-	return s.command(cmd)
 }
 
 // command creates a command
@@ -209,7 +204,7 @@ func (c *Cmd) execute() ([]byte, error) {
 // withSession wraps the command to be run
 // within the specified session
 func (c *Cmd) withSession(id string) {
-	c.command = fmt.Sprintf("Invoke-Command -Session $%s -ScriptBlock {%s}", id, c.command)
+	c.command = fmt.Sprintf("Invoke-Command -Session $%s -ScriptBlock { %s }", id, c.command)
 	if c.credential != nil {
 		c.command = fmt.Sprintf("%s -Credential $%s", c.command, c.credential.id)
 	}

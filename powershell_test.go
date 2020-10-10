@@ -17,16 +17,32 @@ func TestNew(t *testing.T) {
 	fmt.Println(ps.GetPid())
 }
 
-func TestCommand(t *testing.T) {
+func TestExecute(t *testing.T) {
 	is := is.New(t)
 
 	ps, err := powershell.New()
 	is.NoErr(err)
 	defer ps.Close()
 
-	cmd := ps.Command("dir")
-	err = cmd.Start()
+	pwd, err := ps.Execute("dir")
 	is.NoErr(err)
-	err = cmd.Wait()
+	fmt.Println(string(pwd))
+}
+
+func TestConcurrent(t *testing.T) {
+	is := is.New(t)
+
+	ps, err := powershell.New()
 	is.NoErr(err)
+	defer ps.Close()
+
+	go func() {
+		dir, err := ps.Execute("dir")
+		is.Equal(err.Error(), "powershell: cannot execute command - powershell is busy")
+		fmt.Println(string(dir))
+	}()
+
+	hello, err := ps.Execute("echo hello")
+	is.NoErr(err)
+	fmt.Println(string(hello))
 }
