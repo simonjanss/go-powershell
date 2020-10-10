@@ -2,10 +2,17 @@ package powershell_test
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/matryer/is"
 	"github.com/simonjanss/go-powershell"
+)
+
+var (
+	server   = os.Getenv("TEST_SERVER")
+	user     = os.Getenv("TEST_USER")
+	password = os.Getenv("TEST_PASSWORD")
 )
 
 func TestNew(t *testing.T) {
@@ -67,4 +74,38 @@ func TestConcurrentExecute(t *testing.T) {
 	output, err := ps.Execute("echo hello")
 	is.NoErr(err)
 	is.True(string(output) == "hello")
+}
+
+func TestSession(t *testing.T) {
+	is := is.New(t)
+
+	ps, err := powershell.New()
+	is.NoErr(err)
+
+	var tt = []struct {
+		name     string
+		user     string
+		password string
+		auth     string
+	}{
+		{name: "auth-default", user: user, password: password, auth: "Default"},
+		{name: "auth-credssp", user: user, password: password, auth: "CredSSP"},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			session, err := ps.NewSession(server,
+				powershell.WithUsernamePassword(user, password),
+				powershell.WithAuthentication(tc.auth),
+			)
+			is.NoErr(err)
+
+			is.Equal(session.GetPid(), ps.GetPid())
+			output, err := session.Execute("echo hello")
+			is.NoErr(err)
+			is.Equal("hello", string(output))
+		})
+	}
+
 }
