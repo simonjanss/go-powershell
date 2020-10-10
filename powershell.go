@@ -351,16 +351,14 @@ func streamReader(stream io.Reader, boundary string, buffer *[]byte, signal *syn
 		}
 
 		*buffer = append(*buffer, buf[:read]...)
-		if bytes.Contains(*buffer, []byte(boundary+"\n")) {
+		if bytes.Contains(*buffer, []byte(boundary)) {
 			break
 		}
 	}
 
 	// remove the boundary from the buffer
-	splitted := bytes.Split(*buffer, []byte(boundary)) //+"\n"))
-
-	// remove new-line byte and set the result to the buffer
-	*buffer = bytes.TrimSuffix(splitted[0], []byte{10})
+	splitted := bytes.Split(*buffer, []byte(boundary))
+	*buffer = bytes.Trim(splitted[0], "\r\n")
 
 	// set the buffer to nil if it is empty
 	if len(*buffer) == 0 {
