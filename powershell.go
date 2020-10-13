@@ -297,6 +297,9 @@ func (s *Session) Close() error {
 	return nil
 }
 
+// ID returns the session id
+func (s *Session) ID() string { return s.id }
+
 // GetPid returns the process id of the sessions powershell-process
 func (s *Session) GetPid() int { return s.shell.cmd.Process.Pid }
 
