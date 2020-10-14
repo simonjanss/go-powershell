@@ -16,6 +16,7 @@ type Settings struct {
 	CertificateThumbprint string
 	Port                  int
 	UseSSL                bool
+	NetworkAccess         bool
 }
 
 func (s *Settings) Validate() error {
@@ -68,6 +69,10 @@ func (s *Settings) ToArgs() []string {
 
 	if s.UseSSL {
 		args = append(args, "-UseSSL")
+	}
+
+	if s.NetworkAccess {
+		args = append(args, "-EnableNetworkAccess")
 	}
 
 	return args

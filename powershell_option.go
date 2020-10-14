@@ -69,3 +69,13 @@ func WithPort(port int) Option {
 func (w withPort) Apply(o *internal.Settings) {
 	o.Port = int(w)
 }
+
+type withNetworkAccess bool
+
+func WithNetworkAccess() Option {
+	return withNetworkAccess(true)
+}
+
+func (w withNetworkAccess) Apply(o *internal.Settings) {
+	o.NetworkAccess = bool(w)
+}
