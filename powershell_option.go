@@ -20,6 +20,16 @@ func (w withUsernamePassword) Apply(o *internal.Settings) {
 	o.Password = w.password
 }
 
+type useHostName bool
+
+func UseHostName() Option {
+	return useHostName(true)
+}
+
+func (w useHostName) Apply(o *internal.Settings) {
+	o.UseHostName = bool(w)
+}
+
 type withAllowRedirection bool
 
 func WithAllowRedirection() Option {
