@@ -11,6 +11,7 @@ type Settings struct {
 	Username              string
 	Password              string
 	Credential            string
+	UseHostName           bool
 	AllowRedirection      bool
 	Authentication        string
 	CertificateThumbprint string
@@ -39,8 +40,17 @@ func (s *Settings) ToArgs() []string {
 	args := make([]string, 0)
 
 	if s.ComputerName != "" {
-		args = append(args, "-ComputerName")
+		if s.UseHostName {
+			args = append(args, "-HostName")
+		} else {
+			args = append(args, "-ComputerName")
+		}
 		args = append(args, quoteArg(s.ComputerName))
+	}
+
+	if s.Username != "" {
+		args = append(args, "-Username")
+		args = append(args, quoteArg(s.Username))
 	}
 
 	if s.AllowRedirection {
