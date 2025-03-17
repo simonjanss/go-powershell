@@ -1,6 +1,6 @@
 module github.com/simonjanss/go-powershell
 
-go 1.14
+go 1.15
 
 require (
 	github.com/matryer/is v1.4.0
