@@ -2,6 +2,7 @@ package powershell
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 
@@ -37,10 +39,18 @@ type Shell struct {
 	// busy is set to true if
 	// the shell is running a command
 	busy bool
+
+	// mutex to protect the busy flag
+	mu sync.Mutex
 }
 
 // New creates a new powershell-process
 func New() (*Shell, error) {
+	return NewWithContext(context.Background())
+}
+
+// NewWithContext creates a new powershell-process with context
+func NewWithContext(ctx context.Context) (*Shell, error) {
 	// specify which binary to use
 	// depending on os
 	var binary string
@@ -53,7 +63,7 @@ func New() (*Shell, error) {
 		return nil, errors.Errorf("powershell: GOOS %s not supported", runtime.GOOS)
 	}
 
-	cmd := exec.Command(binary, "-NoExit", "-Command", "-")
+	cmd := exec.CommandContext(ctx, binary, "-NoExit", "-Command", "-")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, errors.Wrap(err, "powershell: cannot get stdin-pipe")
@@ -103,17 +113,32 @@ func (s *Shell) Close() error {
 
 // Execute a specified command in the shell
 func (s *Shell) Execute(cmd string) ([]byte, error) {
-	return s.command(cmd).execute()
+	return s.ExecuteWithContext(context.Background(), cmd)
+}
+
+// ExecuteWithContext executes a specified command in the shell with context
+func (s *Shell) ExecuteWithContext(ctx context.Context, cmd string) ([]byte, error) {
+	return s.commandWithContext(ctx, cmd).execute()
 }
 
 // GetPid returns the process id for the powershell-process
-func (s *Shell) GetPid() int { return s.cmd.Process.Pid }
+func (s *Shell) GetPid() int { 
+	if s.cmd == nil || s.cmd.Process == nil {
+		return -1
+	}
+	return s.cmd.Process.Pid 
+}
 
 // createCredential creates a automation credential with username and secret-var
 func (s *Shell) createCredential(user, password string) (*Credential, error) {
+	return s.createCredentialWithContext(context.Background(), user, password)
+}
+
+// createCredentialWithContext creates a automation credential with username and secret-var with context
+func (s *Shell) createCredentialWithContext(ctx context.Context, user, password string) (*Credential, error) {
 	// Create a secure string from the password
 	secret := "goPass" + createRandomString(8)
-	cmd := s.command(fmt.Sprintf("$%s = ConvertTo-SecureString -String '%s' -AsPlainText -Force", secret, password))
+	cmd := s.commandWithContext(ctx, fmt.Sprintf("$%s = ConvertTo-SecureString -String '%s' -AsPlainText -Force", secret, password))
 	if _, err := cmd.execute(); err != nil {
 		return nil, errors.Wrap(err, "powershell: failed to create secure string for credential")
 	}
@@ -126,7 +151,7 @@ func (s *Shell) createCredential(user, password string) (*Credential, error) {
 		secret,
 	)
 
-	if _, err := s.command(credCmd).execute(); err != nil {
+	if _, err := s.commandWithContext(ctx, credCmd).execute(); err != nil {
 		return nil, errors.Wrap(err, "powershell: failed to create credential")
 	}
 
@@ -153,29 +178,48 @@ type Cmd struct {
 
 	// shell is the underlying powershell-process
 	shell *Shell
+
+	// context for the command
+	ctx context.Context
 }
 
 // command creates a command
 func (s *Shell) command(cmd string) *Cmd {
+	return s.commandWithContext(context.Background(), cmd)
+}
+
+// commandWithContext creates a command with context
+func (s *Shell) commandWithContext(ctx context.Context, cmd string) *Cmd {
 	return &Cmd{
 		command:     cmd,
 		outBoundary: createBoundary(),
 		errBoundary: createBoundary(),
 		shell:       s,
+		ctx:         ctx,
 	}
 }
 
 // execute the command - will return output or error
 func (c *Cmd) execute() ([]byte, error) {
 	// check if the shell is busy
+	c.shell.mu.Lock()
 	if c.shell.busy {
+		c.shell.mu.Unlock()
 		return nil, errors.New("powershell: cannot execute command - powershell is busy")
 	}
 	// set the shell to busy and start the command
 	c.shell.busy = true
+	c.shell.mu.Unlock()
+
+	// Ensure we mark the shell as not busy when we're done
+	defer func() {
+		c.shell.mu.Lock()
+		c.shell.busy = false
+		c.shell.mu.Unlock()
+	}()
 
 	// wrap the command in special markers so we know when to stop reading from the pipes
-	command := fmt.Sprintf("%s; echo '%s'; [Console]::Error.WriteLine('%s')\r\n", c.command, c.outBoundary, c.errBoundary)
+	command := fmt.Sprintf("%s; echo '%s'; [Console]::Error.WriteLine('%s')\r\\n", c.command, c.outBoundary, c.errBoundary)
 	if _, err := c.shell.stdin.Write([]byte(command)); err != nil {
 		return nil, errors.Wrap(errors.Wrap(err, c.command), "powershell: cannot execute command")
 	}
@@ -186,15 +230,48 @@ func (c *Cmd) execute() ([]byte, error) {
 		stderr []byte
 	)
 
+	// Create a context with timeout if one is set
+	ctx := c.ctx
+	if deadline, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Until(deadline))
+		defer cancel()
+	}
+
 	waiter := &sync.WaitGroup{}
 	waiter.Add(2)
-	go streamReader(c.shell.stdout, c.outBoundary, &stdout, waiter)
-	go streamReader(c.shell.stderr, c.errBoundary, &stderr, waiter)
-	waiter.Wait()
+	
+	// Create channels for errors
+	errChan := make(chan error, 2)
+	
+	go func() {
+		if err := streamReader(ctx, c.shell.stdout, c.outBoundary, &stdout, waiter); err != nil {
+			errChan <- err
+		}
+	}()
+	
+	go func() {
+		if err := streamReader(ctx, c.shell.stderr, c.errBoundary, &stderr, waiter); err != nil {
+			errChan <- err
+		}
+	}()
+	
+	// Wait for completion or context cancellation
+	done := make(chan struct{})
+	go func() {
+		waiter.Wait()
+		close(done)
+	}()
+	
+	select {
+	case <-done:
+		// Command completed successfully
+	case err := <-errChan:
+		return nil, errors.Wrap(err, "powershell: error reading from pipe")
+	case <-ctx.Done():
+		return nil, errors.Wrap(ctx.Err(), "powershell: command execution timed out or cancelled")
+	}
 
-	// The command has finished
-	// set busy to false
-	c.shell.busy = false
 	// check for errors in stderr
 	if stderr != nil {
 		return nil, errors.Wrap(errors.Wrap(errors.New(string(stderr)), c.command), "powershell: ")
@@ -228,6 +305,11 @@ type Session struct {
 
 // NewSession creates a new session
 func (s *Shell) NewSession(host string, opts ...Option) (*Session, error) {
+	return s.NewSessionWithContext(context.Background(), host, opts...)
+}
+
+// NewSessionWithContext creates a new session with context
+func (s *Shell) NewSessionWithContext(ctx context.Context, host string, opts ...Option) (*Session, error) {
 	// set the computername to the settings
 	var settings internal.Settings
 	settings.ComputerName = host
@@ -243,18 +325,24 @@ func (s *Shell) NewSession(host string, opts ...Option) (*Session, error) {
 	}
 
 	// create a new session with the settings
-	return s.newSession(settings)
+	return s.newSessionWithContext(ctx, settings)
 }
 
 // newSession creates a new session
 func (s *Shell) newSession(settings internal.Settings) (*Session, error) {
+	return s.newSessionWithContext(context.Background(), settings)
+}
+
+// newSessionWithContext creates a new session with context
+func (s *Shell) newSessionWithContext(ctx context.Context, settings internal.Settings) (*Session, error) {
 	// Create arguments from the settings
 	args := settings.ToArgs()
 
 	// Create a credential if username and password is provided
 	var cred *Credential
 	if settings.Username != "" && settings.Password != "" {
-		cred, err := s.createCredential(settings.Username, settings.Password)
+		var err error
+		cred, err = s.createCredentialWithContext(ctx, settings.Username, settings.Password)
 		if err != nil {
 			return nil, err
 		}
@@ -265,7 +353,7 @@ func (s *Shell) newSession(settings internal.Settings) (*Session, error) {
 	sessionID := "goSess" + createRandomString(8)
 
 	// Create the new session with the ID and arguments
-	cmd := s.command(fmt.Sprintf("$%s = New-PSSession %s", sessionID, strings.Join(args, " ")))
+	cmd := s.commandWithContext(ctx, fmt.Sprintf("$%s = New-PSSession %s", sessionID, strings.Join(args, " ")))
 	if _, err := cmd.execute(); err != nil {
 		return nil, errors.Wrap(err, "powershell: Could not create new PSSession")
 	}
@@ -281,14 +369,24 @@ func (s *Session) SetCredential(cred *Credential) {
 
 // Execute a command in the current session
 func (s *Session) Execute(cmd string) ([]byte, error) {
-	command := s.shell.command(cmd)
+	return s.ExecuteWithContext(context.Background(), cmd)
+}
+
+// ExecuteWithContext executes a command in the current session with context
+func (s *Session) ExecuteWithContext(ctx context.Context, cmd string) ([]byte, error) {
+	command := s.shell.commandWithContext(ctx, cmd)
 	command.withSession(s.id)
 	return command.execute()
 }
 
 // Close will disconnect from the powershell-session
 func (s *Session) Close() error {
-	if _, err := s.Execute(fmt.Sprintf("Disconnect-PSSession -Session $%s", s.id)); err != nil {
+	return s.CloseWithContext(context.Background())
+}
+
+// CloseWithContext will disconnect from the powershell-session with context
+func (s *Session) CloseWithContext(ctx context.Context) error {
+	if _, err := s.ExecuteWithContext(ctx, fmt.Sprintf("Disconnect-PSSession -Session $%s", s.id)); err != nil {
 		return errors.Wrap(err, "powershell: failed to disconnect from ps-session")
 	}
 
@@ -301,7 +399,12 @@ func (s *Session) Close() error {
 func (s *Session) ID() string { return s.id }
 
 // GetPid returns the process id of the sessions powershell-process
-func (s *Session) GetPid() int { return s.shell.cmd.Process.Pid }
+func (s *Session) GetPid() int { 
+	if s.shell == nil {
+		return -1
+	}
+	return s.shell.GetPid() 
+}
 
 // Credential holds the id and username
 // for a PSCredential
@@ -342,32 +445,57 @@ func createRandomString(bytes int) string {
 }
 
 // streamReader reads the stdout and stderr from a command
-func streamReader(stream io.Reader, boundary string, buffer *[]byte, signal *sync.WaitGroup) error {
+func streamReader(ctx context.Context, stream io.Reader, boundary string, buffer *[]byte, signal *sync.WaitGroup) error {
+	defer signal.Done()
+	
 	// read all output until we have found our boundary token
 	var bufsize = 64
-
+	
 	for {
-		buf := make([]byte, bufsize)
-		read, err := stream.Read(buf)
-		if err != nil {
-			return err
-		}
-
-		*buffer = append(*buffer, buf[:read]...)
-		if bytes.Contains(*buffer, []byte(boundary)) {
-			break
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			buf := make([]byte, bufsize)
+			
+			// Create a channel to handle read timeouts
+			readDone := make(chan error, 1)
+			
+			go func() {
+				read, err := stream.Read(buf)
+				if err != nil {
+					readDone <- err
+					return
+				}
+				
+				*buffer = append(*buffer, buf[:read]...)
+				readDone <- nil
+			}()
+			
+			// Wait for read to complete or context to be cancelled
+			select {
+			case err := <-readDone:
+				if err != nil {
+					return err
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			
+			if bytes.Contains(*buffer, []byte(boundary)) {
+				break
+			}
 		}
 	}
 
 	// remove the boundary from the buffer
 	splitted := bytes.Split(*buffer, []byte(boundary))
-	*buffer = bytes.Trim(splitted[0], "\r\n")
+	*buffer = bytes.Trim(splitted[0], "\r\\n")
 
 	// set the buffer to nil if it is empty
 	if len(*buffer) == 0 {
 		*buffer = nil
 	}
 
-	signal.Done()
 	return nil
 }
